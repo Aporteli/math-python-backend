@@ -8,7 +8,11 @@ app = FastAPI(title="Math Engine API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000","https://math-site.vercel.app"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://math-site-blond.vercel.app",  
+        "https://math-site.vercel.app",        
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
