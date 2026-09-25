@@ -149,8 +149,14 @@ def _sys_latex(eqs) -> str:
     return f"\\begin{{cases}} {body} \\end{{cases}}"
 
 
-def _eq_latex(eq) -> str:
-    return f"{sp.latex(eq.lhs)} = {sp.latex(eq.rhs)}"
+def _eq_latex(obj) -> str:
+    """Safely render Eq, BooleanFalse, BooleanTrue, or any SymPy object."""
+    if isinstance(obj, sp.Eq):
+        return f"{sp.latex(obj.lhs)} = {sp.latex(obj.rhs)}"
+    try:
+        return sp.latex(obj)
+    except Exception:
+        return str(obj)
 
 
 def _coeff(eq, var):
@@ -172,6 +178,23 @@ def _is_linear_in_all(eqs, syms) -> bool:
     return True
 
 
+def _classify_linear(eqs, syms):
+    """Returns ('unique'|'infinite'|'inconsistent', rank_A, rank_aug)."""
+    try:
+        A, b = sp.linear_eq_to_matrix(eqs, syms)
+        aug = A.row_join(b)
+        rank_A = A.rank()
+        rank_aug = aug.rank()
+        n = len(syms)
+        if rank_A < rank_aug:
+            return "inconsistent", rank_A, rank_aug
+        if rank_A < n:
+            return "infinite", rank_A, rank_aug
+        return "unique", rank_A, rank_aug
+    except Exception:
+        return "unique", 0, 0
+
+
 # ───────────────────────────────────────────────────────────────
 #  SUBSTITUTION METHOD (2x2 and 3x3)
 # ───────────────────────────────────────────────────────────────
@@ -186,12 +209,9 @@ def _substitution_steps(eqs, syms, variables):
 
     current_eqs = list(eqs)
     current_syms = list(syms)
-    # chain of (variable, expression-in-remaining-vars)
-    chain: list[tuple] = []
+    chain = []
 
-    # ── Forward phase: eliminate one variable at a time ──
     while len(current_eqs) > 1 and current_syms:
-        # pick an equation + variable we can isolate
         chosen_eq_idx = None
         chosen_var = None
         chosen_expr = None
@@ -202,7 +222,12 @@ def _substitution_steps(eqs, syms, variables):
                     sols = sp.solve(eq, v)
                 except Exception:
                     sols = []
-                if sols:
+                if (
+                    sols
+                    and isinstance(sols, list)
+                    and len(sols) > 0
+                    and not isinstance(sols[0], (dict, sp.Eq))
+                ):
                     chosen_eq_idx = ei
                     chosen_var = v
                     chosen_expr = sp.simplify(sols[0])
@@ -211,37 +236,58 @@ def _substitution_steps(eqs, syms, variables):
                 break
 
         if chosen_var is None:
-            return steps  # can't proceed cleanly
+            return steps
 
         chosen_eq = current_eqs[chosen_eq_idx]
 
         steps.append(_step(
             f"{chosen_var}-ის გამოსახვა",
-            f"გამოვსახოთ {chosen_var} განტოლებიდან: {_eq_latex(chosen_eq)}.",
+            f"გამოვსახოთ ${chosen_var}$ განტოლებიდან: {_eq_latex(chosen_eq)}.",
             f"{chosen_var} = {sp.latex(chosen_expr)}",
         ))
 
         chain.append((chosen_var, chosen_expr))
 
-        # remaining equations/vars
         remaining = [eq for i, eq in enumerate(current_eqs) if i != chosen_eq_idx]
         remaining_vars = [v for v in current_syms if v != chosen_var]
 
-        # substitute into remaining equations
         new_eqs = []
+        contradiction = False
+
         for i, eq in enumerate(remaining):
             subbed = sp.simplify(eq.subs(chosen_var, chosen_expr))
-            new_eqs.append(subbed)
+
+            if isinstance(subbed, sp.Eq):
+                new_eqs.append(subbed)
+                steps.append(_step(
+                    f"ჩასმა ({i + 2}-ე განტოლება)",
+                    f"ჩავსვათ ${chosen_var} = {sp.latex(chosen_expr)}$ "
+                    f"{i + 2}-ე განტოლებაში.",
+                    _eq_latex(subbed),
+                ))
+            else:
+                contradiction = True
+                steps.append(_step(
+                    f"ჩასმა ({i + 2}-ე განტოლება)",
+                    f"ჩავსვათ ${chosen_var} = {sp.latex(chosen_expr)}$ — "
+                    f"მივიღეთ {sp.latex(subbed)}.",
+                    sp.latex(subbed),
+                ))
+
+        if contradiction:
             steps.append(_step(
-                f"ჩასმა ({i + 2}-ე განტოლება)",
-                f"ჩავსვათ {chosen_var} = {sp.latex(chosen_expr)} {i + 2}-ე განტოლებაში.",
-                _eq_latex(subbed),
-            ))
+    "დასკვნა",
+    "მივიღეთ წინააღმდეგობა — სისტემა არათავსებადია, ამონახსნი არ არსებობს.",
+    "\\text{---}",
+))
+            return steps
+
+        if not new_eqs:
+            return steps
 
         current_eqs = new_eqs
         current_syms = remaining_vars
 
-    # ── Solve the last single-variable equation ──
     if len(current_eqs) == 1 and len(current_syms) == 1:
         last_eq = current_eqs[0]
         last_var = current_syms[0]
@@ -250,7 +296,12 @@ def _substitution_steps(eqs, syms, variables):
         except Exception:
             sols = []
 
-        if not sols:
+        if (
+            not sols
+            or not isinstance(sols, list)
+            or len(sols) == 0
+            or isinstance(sols[0], (dict, sp.Eq))
+        ):
             steps.append(_step(
                 "ბოლო განტოლება ვერ ამოიხსნა",
                 "სისტემა შეიძლება არათანაბარი იყოს.",
@@ -261,18 +312,17 @@ def _substitution_steps(eqs, syms, variables):
         z = sols[0]
         steps.append(_step(
             f"{last_var}-ის პოვნა",
-            f"მივიღეთ ერთცვლადიანი განტოლება. ამოვხსნათ {last_var}-ის მიმართ.",
+            f"მივიღეთ ერთცვლადიანი განტოლება. ამოვხსნათ ${last_var}$-ის მიმართ.",
             f"{_eq_latex(last_eq)} \\;\\Rightarrow\\; {last_var} = {sp.latex(z)}",
         ))
 
-        # ── Back-substitution ──
         known = {last_var: z}
         for var, expr in reversed(chain):
             value = sp.simplify(expr.subs(known))
             known[var] = value
             steps.append(_step(
                 f"უკუჩასმა: {var}",
-                f"ჩავსვათ ნაპოვნი მნიშვნელობები და ვიპოვოთ {var}.",
+                f"ჩავსვათ ნაპოვნი მნიშვნელობები და ვიპოვოთ ${var}$.",
                 f"{var} = {sp.latex(expr)} \\;\\Rightarrow\\; {var} = {sp.latex(value)}",
             ))
 
@@ -287,7 +337,6 @@ def _eliminate(eq_a, eq_b, var, symbols_map):
     """Return a new Eq where var is eliminated: coeff_b*(eq_a) - coeff_a*(eq_b)."""
     ca = _coeff(eq_a, var)
     cb = _coeff(eq_b, var)
-    # multiply eq_a by cb, eq_b by ca, then subtract
     lhs = sp.expand(cb * eq_a.lhs - ca * eq_b.lhs)
     rhs = sp.expand(cb * eq_a.rhs - ca * eq_b.rhs)
     return sp.Eq(lhs, rhs), ca, cb
@@ -301,8 +350,9 @@ def _elimination_steps(eqs, syms, variables):
         _sys_latex(eqs),
     ))
 
-    work = list(eqs)  # work[i] is Eq object for equation i
-    # For 2x2
+    work = list(eqs)
+
+    # ── 2x2 ──
     if len(eqs) == 2:
         e1, e2 = work[0], work[1]
         x = syms[0]
@@ -313,27 +363,29 @@ def _elimination_steps(eqs, syms, variables):
         if c1 == 0 or c2 == 0:
             steps.append(_step(
                 "x უკვე გამორიცხულია",
-                "ერთ-ერთ განტოლებაში x არ მონაწილეობს — გადავდივართ პირდაპირ ამოხსნაზე.",
+                "ერთ-ერთ განტოლებაში $x$ არ მონაწილეობს — გადავდივართ პირდაპირ ამოხსნაზე.",
                 _sys_latex(eqs),
             ))
         else:
             steps.append(_step(
                 "გამრავლება",
-                f"გავამრავლოთ (1) განტოლება {sp.latex(c2)}-ზე და (2) განტოლება {sp.latex(c1)}-ზე, "
-                f"რომ x-ის კოეფიციენტები გაუტოლდეს.",
+                f"გავამრავლოთ (1) განტოლება ${sp.latex(c2)}$-ზე და (2) განტოლება "
+                f"${sp.latex(c1)}$-ზე, რომ $x$-ის კოეფიციენტები გაუტოლდეს.",
                 (
-                    f"{sp.latex(c2)} \\cdot \\left({sp.latex(e1.lhs)}\\right) = "
-                    f"{sp.latex(c2)} \\cdot \\left({sp.latex(e1.rhs)}\\right)"
-                    f"\\\\[4pt]"
-                    f"{sp.latex(c1)} \\cdot \\left({sp.latex(e2.lhs)}\\right) = "
+                    "\\begin{aligned}"
+                    f"{sp.latex(c2)} \\cdot \\left({sp.latex(e1.lhs)}\\right) &= "
+                    f"{sp.latex(c2)} \\cdot \\left({sp.latex(e1.rhs)}\\right) \\\\"
+                    f"{sp.latex(c1)} \\cdot \\left({sp.latex(e2.lhs)}\\right) &= "
                     f"{sp.latex(c1)} \\cdot \\left({sp.latex(e2.rhs)}\\right)"
+                    "\\end{aligned}"
                 ),
             ))
 
             new_eq, ca, cb = _eliminate(e1, e2, x, {})
             steps.append(_step(
                 "გამოკლება (x გამოირიცხება)",
-                f"გამოვაკლოთ ერთმანეთს: {sp.latex(cb)}·(1) − {sp.latex(ca)}·(2).",
+                f"გამოვაკლოთ ერთმანეთს: ${sp.latex(cb)} \\cdot (1) - "
+                f"{sp.latex(ca)} \\cdot (2)$.",
                 _eq_latex(new_eq),
             ))
 
@@ -347,34 +399,31 @@ def _elimination_steps(eqs, syms, variables):
                 y_val = y_sols[0]
                 steps.append(_step(
                     f"{y}-ის პოვნა",
-                    "ერთცვლადიანი განტოლებიდან ვპოულობთ y-ს.",
+                    f"ერთცვლადიანი განტოლებიდან ვპოულობთ ${y}$-ს.",
                     f"{y} = {sp.latex(y_val)}",
                 ))
 
-                # Back-substitute into (1)
                 back = sp.simplify(e1.subs(y, y_val))
                 x_sols = sp.solve(back, x)
                 if x_sols:
                     x_val = x_sols[0]
                     steps.append(_step(
                         f"უკუჩასმა: {x}",
-                        f"ჩავსვათ {y} = {sp.latex(y_val)} პირველ განტოლებაში.",
+                        f"ჩავსვათ ${y} = {sp.latex(y_val)}$ პირველ განტოლებაში.",
                         f"{_eq_latex(back)} \\;\\Rightarrow\\; {x} = {sp.latex(x_val)}",
                     ))
         return steps
 
-    # For 3x3 — full Gaussian elimination
+    # ── 3x3 ──
     if len(eqs) == 3:
         e1, e2, e3 = work[0], work[1], work[2]
         x, y, z = syms
 
-        # Step: eliminate x from e2 using e1
         c1 = _coeff(e1, x)
         c2 = _coeff(e2, x)
         c3 = _coeff(e3, x)
 
         if c1 == 0:
-            # swap equations to find nonzero pivot
             for i in range(1, 3):
                 if _coeff(work[i], x) != 0:
                     work[0], work[i] = work[i], work[0]
@@ -384,34 +433,33 @@ def _elimination_steps(eqs, syms, variables):
                     c3 = _coeff(e3, x)
                     steps.append(_step(
                         "განტოლებების გაცვლა",
-                        "პირველი განტოლების x-ის კოეფიციენტი 0-ია — გავცვალოთ განტოლებები.",
+                        "პირველი განტოლების $x$-ის კოეფიციენტი 0-ია — გავცვალოთ განტოლებები.",
                         _sys_latex([e1, e2, e3]),
                     ))
                     break
 
-        # x-ის გამორიცხვა (2)-დან
         if c2 != 0 and c1 != 0:
             e2_new, _, _ = _eliminate(e1, e2, x, {})
             steps.append(_step(
                 "x-ის გამორიცხვა (2)-დან",
-                f"გამოვაკლოთ: {sp.latex(c2)}·(1) − {sp.latex(c1)}·(2).",
+                f"გამოვაკლოთ: ${sp.latex(c2)} \\cdot (1) - "
+                f"{sp.latex(c1)} \\cdot (2)$.",
                 _eq_latex(e2_new),
             ))
         else:
             e2_new = e2
 
-        # x-ის გამორიცხვა (3)-დან
         if c3 != 0 and c1 != 0:
             e3_new, _, _ = _eliminate(e1, e3, x, {})
             steps.append(_step(
                 "x-ის გამორიცხვა (3)-დან",
-                f"გამოვაკლოთ: {sp.latex(c3)}·(1) − {sp.latex(c1)}·(3).",
+                f"გამოვაკლოთ: ${sp.latex(c3)} \\cdot (1) - "
+                f"{sp.latex(c1)} \\cdot (3)$.",
                 _eq_latex(e3_new),
             ))
         else:
             e3_new = e3
 
-        # Now eliminate y from e3_new using e2_new
         b2 = _coeff(e2_new, y)
         b3 = _coeff(e3_new, y)
 
@@ -419,41 +467,39 @@ def _elimination_steps(eqs, syms, variables):
             e3_final, _, _ = _eliminate(e2_new, e3_new, y, {})
             steps.append(_step(
                 "y-ის გამორიცხვა (3)-დან",
-                f"გამოვაკლოთ: {sp.latex(b3)}·(2') − {sp.latex(b2)}·(3').",
+                f"გამოვაკლოთ: ${sp.latex(b3)} \\cdot (2') - "
+                f"{sp.latex(b2)} \\cdot (3')$.",
                 _eq_latex(e3_final),
             ))
         else:
             e3_final = e3_new
 
-        # Solve for z
         z_sols = sp.solve(e3_final, z) if z in e3_final.free_symbols else []
         if z_sols:
             z_val = sp.simplify(z_sols[0])
             steps.append(_step(
                 f"{z}-ის პოვნა",
-                "მივიღეთ ერთცვლადიანი განტოლება z-ის მიმართ.",
+                f"მივიღეთ ერთცვლადიანი განტოლება ${z}$-ის მიმართ.",
                 f"{_eq_latex(e3_final)} \\;\\Rightarrow\\; {z} = {sp.latex(z_val)}",
             ))
 
-            # Back-substitute into e2_new for y
             e2_back = sp.simplify(e2_new.subs(z, z_val))
             y_sols = sp.solve(e2_back, y) if y in e2_back.free_symbols else []
             if y_sols:
                 y_val = sp.simplify(y_sols[0])
                 steps.append(_step(
                     f"უკუჩასმა: {y}",
-                    f"ჩავსვათ {z} = {sp.latex(z_val)} (2')-ში.",
+                    f"ჩავსვათ ${z} = {sp.latex(z_val)}$ (2')-ში.",
                     f"{_eq_latex(e2_back)} \\;\\Rightarrow\\; {y} = {sp.latex(y_val)}",
                 ))
 
-                # Back-substitute into e1 for x
                 e1_back = sp.simplify(e1.subs({y: y_val, z: z_val}))
                 x_sols = sp.solve(e1_back, x) if x in e1_back.free_symbols else []
                 if x_sols:
                     x_val = sp.simplify(x_sols[0])
                     steps.append(_step(
                         f"უკუჩასმა: {x}",
-                        f"ჩავსვათ {y} და {z} (1)-ში.",
+                        f"ჩავსვათ ${y}$ და ${z}$ (1)-ში.",
                         f"{_eq_latex(e1_back)} \\;\\Rightarrow\\; {x} = {sp.latex(x_val)}",
                     ))
 
@@ -473,7 +519,7 @@ def _matrix_steps(eqs, syms, variables):
 
     steps.append(_step(
         "მატრიცული სახე A·X = b",
-        "გამოვყოთ კოეფიციენტების მატრიცა A და თავისუფალი წევრების სვეტი b.",
+        "გამოვყოთ კოეფიციენტების მატრიცა $A$ და თავისუფალი წევრების სვეტი $b$.",
         (
             f"A = {sp.latex(A)},\\quad "
             f"X = {sp.latex(sp.Matrix(syms))},\\quad "
@@ -483,7 +529,8 @@ def _matrix_steps(eqs, syms, variables):
 
     steps.append(_step(
         "მთავარი დეტერმინანტი",
-        "გამოვთვალოთ det(A). თუ ≠ 0, სისტემას აქვს ერთადერთი ამონახსნი (კრამერის წესი).",
+        f"გამოვთვალოთ $\\det(A)$. თუ $\\det(A) \\neq 0$, სისტემას აქვს ერთადერთი "
+        f"ამონახსნი (კრამერის წესი).",
         f"\\det(A) = {sp.latex(det)}",
     ))
 
@@ -503,14 +550,15 @@ def _matrix_steps(eqs, syms, variables):
 
         steps.append(_step(
             f"კრამერი: {v}",
-            f"A-ს {i + 1}-ე სვეტი შევცვალოთ b-თი, გამოვთვალოთ det(A_{{{v}}}), "
-            f"შემდეგ გავყოთ det(A)-ზე.",
+            f"$A$-ს {i + 1}-ე სვეტი შევცვალოთ $b$-თი, გამოვთვალოთ "
+            f"$\\det(A_{{{v}}})$, შემდეგ გავყოთ $\\det(A)$-ზე.",
             (
-                f"A_{{{v}}} = {sp.latex(Ai)},\\quad "
-                f"\\det(A_{{{v}}}) = {sp.latex(det_i)}"
-                f"\\\\[4pt]"
-                f"{v} = \\dfrac{{\\det(A_{{{v}}})}}{{\\det(A)}} = "
+                "\\begin{aligned}"
+                f"A_{{{v}}} &= {sp.latex(Ai)},\\quad "
+                f"\\det(A_{{{v}}}) = {sp.latex(det_i)} \\\\"
+                f"{v} &= \\dfrac{{\\det(A_{{{v}}})}}{{\\det(A)}} = "
                 f"\\dfrac{{{sp.latex(det_i)}}}{{{sp.latex(det)}}} = {sp.latex(value)}"
+                "\\end{aligned}"
             ),
         ))
 
@@ -529,7 +577,6 @@ def _nonlinear_steps(eqs, syms, variables, solutions):
         _sys_latex(eqs),
     ))
 
-    # Try to find a linear equation to isolate a variable
     linear_eq = None
     linear_var = None
     linear_expr = None
@@ -549,21 +596,19 @@ def _nonlinear_steps(eqs, syms, variables, solutions):
     if linear_eq is not None:
         steps.append(_step(
             f"წრფივი განტოლებიდან გამოსახვა: {linear_var}",
-            f"ეს განტოლება წრფივია {linear_var}-ის მიმართ — გამოვსახოთ.",
+            f"ეს განტოლება წრფივია ${linear_var}$-ის მიმართ — გამოვსახოთ.",
             f"{linear_var} = {sp.latex(linear_expr)}",
         ))
 
-        # Substitute into the other equations
         for eq in eqs:
             if eq is linear_eq:
                 continue
             subbed = sp.simplify(eq.subs(linear_var, linear_expr))
             steps.append(_step(
                 "ჩასმა",
-                f"ჩავსვათ {linear_var} = {sp.latex(linear_expr)} არაწრფივ განტოლებაში.",
+                f"ჩავსვათ ${linear_var} = {sp.latex(linear_expr)}$ არაწრფივ განტოლებაში.",
                 _eq_latex(subbed),
             ))
-            # Try to solve the resulting single-variable equation
             other_vars = [v for v in syms if v != linear_var]
             if len(other_vars) == 1:
                 sols = sp.solve(subbed, other_vars[0])
@@ -579,12 +624,11 @@ def _nonlinear_steps(eqs, syms, variables, solutions):
                     ))
     else:
         steps.append(_step(
-            "არაწრფივი სისტემა",
-            "წრფივი განტოლება ვერ მოიძებნა — SymPy ხსნის სისტემას პირდაპირ.",
-            "\\text{(იხილეთ ამონახსნები)}",
-        ))
+    "არაწრფივი სისტემა",
+    "წრფივი განტოლება ვერ მოიძებნა — SymPy ხსნის სისტემას პირდაპირ.",
+    "\\text{---}",
+))
 
-    # Show every solution
     for idx, sol in enumerate(solutions):
         sol_tex = ",\\quad ".join(
             f"{v} = {sp.latex(sol[v])}" for v in variables if v in sol
@@ -615,20 +659,31 @@ def solve_system(data: SolveInput):
         eqs = [_parse_equation(e, symbols) for e in data.equations]
         syms = list(symbols.values())
 
-        # ── Solve ──
         try:
-            solutions = sp.solve(eqs, syms, dict=True)
+            raw_solutions = sp.solve(eqs, syms, dict=True)
         except Exception:
+            raw_solutions = []
+
+        if raw_solutions is True:
+            solutions = []
+        elif raw_solutions is False or raw_solutions is None:
+            solutions = []
+        elif isinstance(raw_solutions, list):
+            solutions = [s for s in raw_solutions if isinstance(s, dict)]
+        else:
             solutions = []
 
-        # ── Detect linearity + build matrix info ──
         linear_info = None
         is_linear = False
+        status = "unique"
+        rank_A = rank_aug = 0
+
         try:
             A, b = sp.linear_eq_to_matrix(eqs, syms)
             if A.shape[0] == A.shape[1]:
-                det = A.det()
                 is_linear = True
+                det = A.det()
+                status, rank_A, rank_aug = _classify_linear(eqs, syms)
                 if det != 0:
                     sol_vec = A.LUsolve(b)
                     linear_info = {
@@ -645,40 +700,101 @@ def solve_system(data: SolveInput):
         except Exception:
             is_linear = False
 
-        # ── Build step-by-step methods ──
         methods = []
 
-        if is_linear:
+        if is_linear and status == "unique":
+            for method_id, label, fn in [
+                ("substitution", "ჩასმის მეთოდი", _substitution_steps),
+                ("elimination", "შეკრების მეთოდი", _elimination_steps),
+                ("matrix", "მატრიცული მეთოდი (კრამერი)", _matrix_steps),
+            ]:
+                try:
+                    steps = fn(eqs, syms, data.variables)
+                except Exception as e:
+                    steps = [_step(
+                        "მეთოდი ვერ დამუშავდა",
+                        f"შიდა შეცდომა: {e}",
+                        "\\text{---}",
+                    )]
+                methods.append({
+                    "method": method_id,
+                    "label": label,
+                    "steps": steps,
+                })
+
+        elif is_linear and status == "inconsistent":
             methods.append({
-                "method": "substitution",
-                "label": "ჩასმის მეთოდი",
-                "steps": _substitution_steps(eqs, syms, data.variables),
+                "method": "nonlinear",
+                "label": "ანალიზი",
+                "steps": [
+                    _step(
+    "სისტემა არათავსებადია",
+    "მატრიცის დეტერმინანტი 0-ია, ხოლო გაფართოებული "
+    "მატრიცის რანგი მეტია — სისტემას ამონახსნი არ აქვს.",
+    (
+        f"\\det(A) = 0,\\quad "
+        f"\\operatorname{{rank}}(A) = {rank_A},\\quad "
+        f"\\operatorname{{rank}}([A|b]) = {rank_aug} "
+        f"\\Rightarrow \\text{{---}}"
+    ),
+),
+                ],
             })
+
+        elif is_linear and status == "infinite":
             methods.append({
-                "method": "elimination",
-                "label": "შეკრების მეთოდი",
-                "steps": _elimination_steps(eqs, syms, data.variables),
+                "method": "nonlinear",
+                "label": "ანალიზი",
+                "steps": [
+                    _step(
+                        "უსასრულოდ ბევრი ამონახსნი",
+                        "დეტერმინანტი 0-ია და რანგები ტოლია — სისტემა "
+                        "თავსებადია, მაგრამ ამონახსნები უსასრულოა "
+                        "(ერთი ან მეტი თავისუფალი ცვლადი).",
+                        (
+                            f"\\det(A) = 0,\\quad "
+                            f"\\operatorname{{rank}}(A) = "
+                            f"\\operatorname{{rank}}([A|b]) = {rank_A} "
+f"\\Rightarrow \\text{{---}}"
+                        ),
+                    ),
+                ],
             })
-            methods.append({
-                "method": "matrix",
-                "label": "მატრიცული მეთოდი (კრამერი)",
-                "steps": _matrix_steps(eqs, syms, data.variables),
-            })
+
         else:
+            try:
+                steps = _nonlinear_steps(eqs, syms, data.variables, solutions)
+            except Exception as e:
+                steps = [_step(
+                    "მეთოდი ვერ დამუშავდა",
+                    f"შიდა შეცდომა: {e}",
+                    "\\text{---}",
+                )]
             methods.append({
                 "method": "nonlinear",
                 "label": "არაწრფივი — ჩასმით",
-                "steps": _nonlinear_steps(eqs, syms, data.variables, solutions),
+                "steps": steps,
             })
 
+        serialized_solutions = []
+        for sol in solutions:
+            entry = {}
+            for v in data.variables:
+                sym = symbols[v]
+                if sym in sol:
+                    entry[v] = str(sol[sym])
+            if entry:
+                serialized_solutions.append(entry)
+
+        if not serialized_solutions and linear_info is not None:
+            serialized_solutions.append(dict(linear_info["solution"]))
+
         return {
-            "solutions": [
-                {v: str(sol[v]) for v in data.variables if v in sol}
-                for sol in solutions
-            ],
+            "solutions": serialized_solutions,
             "is_linear": is_linear,
             "linear": linear_info,
             "methods": methods,
+            "status": status,
         }
 
     except HTTPException:
