@@ -30,7 +30,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://math-site-blond.vercel.app",
+        "https://pinf.com.ge",
         "https://math-site.vercel.app",
     ],
     allow_credentials=True,
