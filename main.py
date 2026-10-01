@@ -22,6 +22,7 @@ from combinatorics import router as combinatorics_router
 from sequences import router as sequence_router
 from radicals import router as radical_router
 from rearrange import router as rearrange_router
+from vector_curve import router as vector_curve_router
 
 app = FastAPI(title="Math Engine API")
 
@@ -49,6 +50,7 @@ app.include_router(combinatorics_router)
 app.include_router(sequence_router)
 app.include_router(radical_router)
 app.include_router(rearrange_router)
+app.include_router(vector_curve_router)
 
 # ═══════════════════════════════════════════════════════════════
 #  EXISTING: Parametric Curve Evaluation
