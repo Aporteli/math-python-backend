@@ -10,6 +10,19 @@ from sympy.parsing.sympy_parser import (
     convert_xor,
 )
 
+from polynomial import router as polynomial_router
+from inequalities import router as inequality_router
+from triangle import router as triangle_router
+from logarithms import router as logarithm_router
+from exponents import router as exponent_router
+from unit_circle import router as unit_circle_router
+from geometry import router as geometry_router
+from vectors import router as vector_router
+from combinatorics import router as combinatorics_router
+from sequences import router as sequence_router
+from radicals import router as radical_router
+from rearrange import router as rearrange_router
+
 app = FastAPI(title="Math Engine API")
 
 app.add_middleware(
@@ -24,6 +37,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(polynomial_router)
+app.include_router(inequality_router)
+app.include_router(triangle_router)
+app.include_router(logarithm_router)
+app.include_router(exponent_router)
+app.include_router(unit_circle_router)
+app.include_router(geometry_router)
+app.include_router(vector_router)
+app.include_router(combinatorics_router)
+app.include_router(sequence_router)
+app.include_router(radical_router)
+app.include_router(rearrange_router)
 
 # ═══════════════════════════════════════════════════════════════
 #  EXISTING: Parametric Curve Evaluation
